@@ -19,8 +19,6 @@ from aiogram.types import (
 )
 from parse_group import parse_group
 
-TOKEN = ''
-MONGOURL = ''
 
 
 
@@ -80,16 +78,22 @@ TEXTS = {
         'refresh': "🔄 Refresh",
         'remove_from_queue': "❌ Remove from queue",
         'select_student': "Select student to remove from queue:",
+        'select_student_2': "Select student:",
         'removed_from_queue': "❌ You have been removed from queue for lab {} in subject {}.",
+        'ended_in_queue': "❌ You have been sent to end of the queue in subject {}.",
         'ok': "🆗",
         'message_hidden': "Message hidden",
         'select_language': "🌐 Select language / Выберите язык:",
         'language_set': "✅ Language set to English",
         'chat_error': "❌ Error: Admin chat is not configured. Contact the administrator.",
         'admin_req': "You do not have administrator rights!",
-        'queue_update': 'Queue updated 😊'
+        'queue_update': 'Queue updated 😊',
+        'delete_me': 'Get out of the queue 😊',
+        'to_end': '📋 Send yourself to the end of the queue',
+        'deleted': '✅ You have removed yourself from the queue',
+        'send_to_the_end': '🔄 Send student to end of the queue'
     },
-    'ru': {
+    'ru': { 
         'subjects': {
             'ОПД': 'ОПД',
             'Программирование': 'Программирование',
@@ -131,14 +135,20 @@ TEXTS = {
         'refresh': "🔄 Обновить",
         'remove_from_queue': "❌ Удалить из очереди",
         'select_student': "Выберите студента для удаления из очереди:",
+        'select_student_2': "Выберите студента:",
         'removed_from_queue': "❌ Вы были удалены из очереди на сдачу лабораторной {} по предмету {}.",
+        'ended_in_queue': "❌ Вы были отправлены в конец очереди по предмету {}.",
         'ok': "🆗",
         'message_hidden': "Сообщение скрыто",
         'select_language': "🌐 Select language / Выберите язык:",
         'language_set': "✅ Язык установлен на русский",
         'chat_error': "❌ Ошибка: админский чат не настроен. Обратитесь к администратору.",
         'admin_req': "У вас нет прав администратора!",
-        'queue_update': "Очередь обновлена 😊"
+        'queue_update': "Очередь обновлена 😊",
+        'delete_me': 'Удалиться из очереди 😊',
+        'to_end': '📋 Отправить себя в конец очереди',
+        'deleted': '✅ Вы удалили себя из очереди',
+        'send_to_the_end': '🔄 Отправить человека в конец очереди'
     }
 }
 async def get_main_keyboard(lang):
@@ -632,11 +642,13 @@ async def view_subject_queue(callback: CallbackQuery):
         {'subject': subject, 'status': 'approved'}
     ).sort('created_at', 1)
     
-    
+    in_queue = False
     queue_text = TEXTS[lang]['queue_for'].format(TEXTS[lang]['subjects'][subject])
     i = 1
     async for entry in queue:
         queue_text += TEXTS[lang]['queue_text'].format(i, entry['real_name'], entry['lab_number'])
+        if entry['user_id'] == user_id:
+            in_queue = True
         i += 1
         
     if queue_text == TEXTS[lang]['queue_for'].format(TEXTS[lang]['subjects'][subject]):
@@ -646,16 +658,123 @@ async def view_subject_queue(callback: CallbackQuery):
         [InlineKeyboardButton(text=TEXTS[lang]['refresh'], callback_data=f"view_queue:{subject}")],
         [InlineKeyboardButton(text=TEXTS[lang]['back'], callback_data="view_queue")]
     ])
+
+    if in_queue:
+        keyboard.inline_keyboard.insert(1, [
+            InlineKeyboardButton(text=TEXTS[lang]['delete_me'], callback_data=f"delete_me:{subject}")
+        ])
+        keyboard.inline_keyboard.insert(2, [
+            InlineKeyboardButton(text=TEXTS[lang]['to_end'], callback_data=f"to_end:{subject}")
+        ])
     
     if await is_admin(callback.from_user.id):
         keyboard.inline_keyboard.insert(0, [
             InlineKeyboardButton(text=TEXTS[lang]['remove_from_queue'], 
                                callback_data=f"remove_from_queue:{subject}")
         ])
+        keyboard.inline_keyboard.insert(0, [
+            InlineKeyboardButton(text=TEXTS[lang]['send_to_the_end'], 
+                               callback_data=f"send_to_the_end:{subject}")
+        ])
     
     if callback.message.text != queue_text:
         await callback.message.edit_text(queue_text, reply_markup=keyboard)
     await callback.answer(TEXTS[lang]['queue_update'])
+
+
+@dp.callback_query(F.data.startswith("send_to_the_end:"))
+async def send_to_the_end_select(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    lang = await get_user_language(user_id)
+    if not await is_admin(callback.from_user.id):
+        await callback.answer(TEXTS[lang]['admin_req'])
+        return
+    
+    subject = callback.data.split(':')[1]
+    queue = queue_collection.find(
+        {'subject': subject, 'status': 'approved'}
+    ).sort('created_at', 1)
+    
+    keyboard = []
+    i = 1
+    async for entry in queue:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=TEXTS[lang]['queue_text'].format(i, entry['real_name'], entry['lab_number']), 
+                callback_data=f"end_entry:{entry['user_id']}:{subject}:{entry['lab_number']}"
+            )
+        ])
+        i += 1
+    
+    keyboard.append([InlineKeyboardButton(text=TEXTS[lang]['back'], 
+                                        callback_data=f"view_queue:{subject}")])
+    
+    await callback.message.edit_text(
+        TEXTS[lang]['select_student_2'],
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("end_entry:"))
+async def end_entry(callback: CallbackQuery):
+    lang1 = await get_user_language(callback.from_user.id)
+    if not await is_admin(callback.from_user.id):
+        await callback.answer(TEXTS[lang1]['admin_req'])
+        return
+    
+    _, user_id, subject, lab_number = callback.data.split(':')
+    user_id = int(user_id)
+    lang = await get_user_language(user_id)
+    lab_number = int(lab_number)
+    
+
+    await queue_collection.update_one(
+        {'user_id': user_id, 'subject': subject}, {'$set': { 'created_at': datetime.utcnow()}}
+    )
+    
+
+    
+    await callback.bot.send_message(
+        user_id,
+        TEXTS[lang]['ended_in_queue'].format(TEXTS[lang]['subjects'][subject]),
+        reply_markup=keyboardok
+    )
+    
+
+    await view_subject_queue(callback)
+
+    #Добавить англ
+    await callback.answer("Студент отправлен в конец очереди")
+
+@dp.callback_query(F.data.startswith("to_end:"))
+async def delete_me_from_queue(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    lang = await get_user_language(user_id)
+
+    subject = callback.data.split(':')[1]
+    
+    await queue_collection.update_one(
+        {'user_id': user_id, 'subject': subject},
+        {'$set': {'created_at': datetime.utcnow()}}
+    )
+    
+
+    await view_subject_queue(callback)
+
+@dp.callback_query(F.data.startswith("delete_me:"))
+async def delete_me_from_queue(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    lang = await get_user_language(user_id)
+
+    subject = callback.data.split(':')[1]
+    
+    await queue_collection.delete_one(
+        {'user_id': user_id, 'subject': subject}
+    )
+
+    await view_subject_queue(callback)
+    await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("remove_from_queue:"))
 async def remove_from_queue_select(callback: CallbackQuery):
@@ -704,7 +823,6 @@ async def process_ok(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("remove_entry:"))
 async def remove_queue_entry(callback: CallbackQuery):
     lang1 = await get_user_language(callback.from_user.id)
-    """Remove specific entry from queue"""
     if not await is_admin(callback.from_user.id):
         await callback.answer(TEXTS[lang1]['admin_req'])
         return
@@ -761,6 +879,34 @@ async def make_admin(message: Message) -> None:
     
     await message.answer(f"Пользователь {user['real_name']} назначен администратором")
 
+
+@dp.message(Command("pardon_admin"))
+async def make_admin(message: Message) -> None:
+    """Make user an admin by ISU number"""
+  
+    if not await is_admin(message.from_user.id):
+        await message.answer("У вас нет прав администратора!")
+        return
+    
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: /pardon_admin <номер_ису>")
+        return
+    
+    isu_number = args[1]
+    user = await users_collection.find_one({'isu_number': isu_number})
+    if not user:
+        await message.answer("Пользователь с таким номером ИСУ не найден")
+        return
+    
+  
+    await users_collection.update_one(
+        {'isu_number': isu_number},
+        {'$set': {'is_admin': False}}
+    )
+    
+    await message.answer(f"У пользователя {user['real_name']} украли администратора")
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main_menu(callback: CallbackQuery):
