@@ -677,7 +677,7 @@ async def view_subject_queue(callback: CallbackQuery):
                                callback_data=f"send_to_the_end:{subject}")
         ])
     
-    if callback.message.text != queue_text:
+    if callback.message.text != queue_text.strip():
         await callback.message.edit_text(queue_text, reply_markup=keyboard)
     await callback.answer(TEXTS[lang]['queue_update'])
 
